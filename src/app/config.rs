@@ -85,6 +85,8 @@ pub struct Config {
     pub control_connect_timeout: Duration,
 
     pub identity_config: tls::Conditional<identity::Config>,
+
+    pub controller_name: tls::PeerIdentity,
     //
     // Destination Config
     //
@@ -256,6 +258,7 @@ pub const ENV_IDENTITY_DISABLED: &str = "LINKERD2_PROXY_IDENTITY_DISABLED";
 pub const ENV_IDENTITY_DIR: &str = "LINKERD2_PROXY_IDENTITY_DIR";
 pub const ENV_IDENTITY_TRUST_ANCHORS: &str = "LINKERD2_PROXY_IDENTITY_TRUST_ANCHORS";
 pub const ENV_IDENTITY_IDENTITY_LOCAL_NAME: &str = "LINKERD2_PROXY_IDENTITY_LOCAL_NAME";
+pub const ENV_IDENTITY_CONTROLLER_NAME: &str = "LINKERD2_PROXY_IDENTITY_CONTROLLER_NAME";
 pub const ENV_IDENTITY_TOKEN_FILE: &str = "LINKERD2_PROXY_IDENTITY_TOKEN_FILE";
 pub const ENV_IDENTITY_MIN_REFRESH: &str = "LINKERD2_PROXY_IDENTITY_MIN_REFRESH";
 pub const ENV_IDENTITY_MAX_REFRESH: &str = "LINKERD2_PROXY_IDENTITY_MAX_REFRESH";
@@ -425,6 +428,8 @@ impl Config {
             parse_control_addr(strings, ENV_DESTINATION_SVC_BASE)
         };
 
+        let controller_name = parse(strings, ENV_IDENTITY_CONTROLLER_NAME, parse_identity);
+
         let dst_token = strings.get(ENV_DESTINATION_CONTEXT);
 
         let dst_concurrency_limit = parse(
@@ -512,6 +517,10 @@ impl Config {
             destination_context: dst_token?.unwrap_or_default(),
 
             identity_config: identity_config?
+                .map(Conditional::Some)
+                .unwrap_or_else(|| Conditional::None(tls::ReasonForNoIdentity::Disabled)),
+
+            controller_name: controller_name?
                 .map(Conditional::Some)
                 .unwrap_or_else(|| Conditional::None(tls::ReasonForNoIdentity::Disabled)),
 

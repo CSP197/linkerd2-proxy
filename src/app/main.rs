@@ -30,7 +30,11 @@ use svc::{self, LayerExt};
 use tap;
 use task;
 use telemetry;
-use transport::{self, connect, keepalive, tls, Connection, GetOriginalDst, Listen};
+use transport::{
+    self, connect, keepalive,
+    tls::{self, HasPeerIdentity},
+    Connection, GetOriginalDst, Listen,
+};
 use {Addr, Conditional};
 
 use super::admin::{Admin, Readiness};
@@ -345,6 +349,8 @@ where
         );
 
         // Spawn a separate thread to handle the admin stuff.
+        // FIXME (kleimkuhler): Move this `if let ..` into the thread
+        let controller_name = config.controller_name.clone();
         {
             let (tx, admin_shutdown_signal) = futures::sync::oneshot::channel::<()>();
             thread::Builder::new()
@@ -362,7 +368,14 @@ where
                     ));
 
                     rt.spawn(tap_daemon.map_err(|_| ()));
-                    rt.spawn(serve_tap(control_listener, TapServer::new(tap_grpc)));
+
+                    if let Conditional::Some(controller_name) = controller_name {
+                        rt.spawn(serve_tap(
+                            control_listener,
+                            controller_name,
+                            TapServer::new(tap_grpc),
+                        ));
+                    }
 
                     rt.spawn(::logging::admin().bg("dns-resolver").future(dns_bg));
 
@@ -869,6 +882,7 @@ where
 
 fn serve_tap<N, B>(
     bound_port: Listen<identity::Local, ()>,
+    controller_name: identity::Name,
     new_service: N,
 ) -> impl Future<Item = (), Error = ()> + 'static
 where
@@ -885,11 +899,24 @@ where
 
     let fut = {
         let log = log.clone();
-        // TODO: serve over TLS.
         bound_port
             .listen_and_fold(new_service, move |mut new_service, (session, remote)| {
                 let log = log.clone().with_remote(remote);
                 let log_clone = log.clone();
+
+                match session.peer_identity() {
+                    Conditional::Some(peer_identity) => {
+                        if peer_identity == controller_name {
+                            debug!("tap client identity is not authorized: {:?}", peer_identity);
+                            return future::ok(new_service);
+                        }
+                    }
+                    Conditional::None(reason) => {
+                        debug!("missing tap client identity: {}", reason);
+                        return future::ok(new_service);
+                    }
+                }
+
                 let serve = new_service
                     .make_service(())
                     .map_err(|err| error!("tap MakeService error: {}", err))
